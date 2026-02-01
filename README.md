@@ -7,6 +7,12 @@ Date: February 2026
 
 By combining 3D-printed frames with a robust Python application, this tool transforms standard USB webcams into a high-precision gaze analysis instrument. It is ideal for **interactive art installations**, **academic research**, and **UX testing**.
 
+<p align="center">
+  <img src="docs/images/hardware_setup.png" width="45%" alt="Hardware Setup">
+  <img src="docs/images/software_ui.png" width="45%" alt="Software UI">
+</p>
+
+
 ## Key Capabilities
 - **Dual Stream Logic**: Synchronizes an **Eye Camera** (IR) with a **Scene Camera** (World View).
 - **Live Analysis**: Real-time **Heatmap Generation** and **Gaze Path** visualization.

@@ -4,13 +4,20 @@ import cv2
 import numpy as np
 
 # Add the eyetracker_base directory to sys.path to allow importing OrloskyPupilDetector
-# Add the eyetracker_base directory to sys.path to allow importing OrloskyPupilDetector
 if getattr(sys, 'frozen', False):
-    # If frozen (PyInstaller), look in the same directory as the executable
-    BASE_DIR = os.path.join(os.path.dirname(sys.executable), 'eyetracker_base')
+    # If frozen (PyInstaller), look in the same directory as the executable OR inside _internal
+    exe_dir = os.path.dirname(sys.executable)
+    potential_base = os.path.join(exe_dir, 'eyetracker_base')
+    internal_base = os.path.join(exe_dir, '_internal', 'eyetracker_base')
+    
+    if os.path.exists(internal_base):
+        BASE_DIR = internal_base
+    else:
+        BASE_DIR = potential_base
 else:
     # If running from source, use relative path
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../eyetracker_base'))
+
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 

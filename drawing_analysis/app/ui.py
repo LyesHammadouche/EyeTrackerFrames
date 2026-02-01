@@ -28,6 +28,44 @@ from globe_fitting import GlobeFitter
 from video_recorder import VideoRecorder
 from styles import MODERN_THEME_QSS
 from head_tracker import HeadTrackerThread
+
+def get_asset_path(filename, subfolder="interface_elements"):
+    """
+    Robustly find assets in Dev, PyInstaller Root, or PyInstaller _internal.
+    """
+    # 1. Determine Base Directory
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+        # Check _internal (PyInstaller 6+)
+        if os.path.exists(os.path.join(base_dir, "_internal")):
+            internal_dir = os.path.join(base_dir, "_internal")
+            # If asset exists in _internal/assets, use that
+            if os.path.exists(os.path.join(internal_dir, "assets")):
+                base_dir = internal_dir
+    else:
+        # Dev Mode: .../app/ui.py -> .../drawing_analysis/app -> .../drawing_analysis -> Root
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    # 2. Construct Potential Paths
+    # We check:
+    # A) assets/[subfolder]/[filename] (New Structure)
+    # B) interface elements/[filename] (Old Structure - only if subfolder is default)
+    # C) [subfolder]/[filename] (Direct)
+    
+    # Handle "SVG icons" being a nested folder inside interface_elements
+    if subfolder == "SVG icons":
+         path_a = os.path.join(base_dir, "assets", "interface_elements", "SVG icons", filename)
+         path_b = os.path.join(base_dir, "interface elements", "SVG icons", filename)
+    else:
+         path_a = os.path.join(base_dir, "assets", subfolder, filename)
+         path_b = os.path.join(base_dir, "interface elements", filename)
+
+    if os.path.exists(path_a): return path_a
+    if os.path.exists(path_b): return path_b
+    
+    # Fallback to local (if running from flat dir)
+    return os.path.join(base_dir, filename)
+
 class AspectRatioLabel(QLabel):
     def __init__(self, text="", parent=None, ratio=4/3):
         super().__init__(text, parent)
@@ -197,21 +235,28 @@ class CalibrationOverlay(QWidget):
         self.msg = ""
         
         # Load Custom Crosshair
-        # Construct absolute path to ensure loading works regardless of CWD
-        current_file = os.path.abspath(__file__)
-        current_dir = os.path.dirname(current_file) # .../drawing_analysis/app
-        # traverse up: app -> drawing_analysis -> EyeTrackingFrame
-        project_root = os.path.dirname(os.path.dirname(current_dir)) 
-        
-        # PRIORITIZE HARDCODED PATH based on user confirmation
-        hardcoded_path = r"C:\Users\xdlye\Desktop\WIP\Ai Progs\EyeTrackingFrame\assets\interface_elements\calibrationCrossHair.png"
-        
-        # Try multiple potential paths to be robust
+        # Custom Crosshair Path Logic (Robust for Dev & PyInstaller)
+        if getattr(sys, 'frozen', False):
+            # If Frozen (Exe), assets are likely alongside the executable or in _internal
+            exe_dir = os.path.dirname(sys.executable)
+            if os.path.exists(os.path.join(exe_dir, "_internal", "assets")):
+                base_path = os.path.join(exe_dir, "_internal")
+            else:
+                base_path = exe_dir
+        else:
+            # If Dev, traverse up from this file
+            current_file = os.path.abspath(__file__)
+            current_dir = os.path.dirname(current_file)
+            base_path = os.path.dirname(os.path.dirname(current_dir)) # Project Root
+
+        # Defined paths to check
         potential_paths = [
-            hardcoded_path, # Try this first!
-            os.path.join(project_root, "assets", "interface_elements", "calibrationCrossHair.png"),
-            os.path.join(project_root, "interface elements", "calibrationCrossHair.png"), # Fallback
-            os.path.join(current_dir, "calibrationCrossHair.png") 
+            # 1. New Structure (assets/interface_elements/...)
+            os.path.join(base_path, "assets", "interface_elements", "calibrationCrossHair.png"),
+            # 2. Old Structure (interface elements/...) - Backwards compatibility
+            os.path.join(base_path, "interface elements", "calibrationCrossHair.png"),
+            # 3. Internal/Relative Fallback
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibrationCrossHair.png")
         ]
         
         self.crosshair_pixmap = None
@@ -323,23 +368,21 @@ class MainWindow(QMainWindow):
         # Custom gaze cursor image
         self._load_gaze_cursor_image()
         
-        # Load Custom Crosshair for Scene Overlay (OpenCV)
-        # Use hardcoded path prioritizing user confirmation
-        hardcoded_path = r"C:\Users\xdlye\Desktop\WIP\Ai Progs\EyeTrackingFrame\assets\interface_elements\calibrationCrossHair.png"
-        self.crosshair_img_cv = None
         
-        if os.path.exists(hardcoded_path):
+        # Load Custom Crosshair for Scene Overlay (OpenCV)
+        self.crosshair_img_cv = None
+        crosshair_path = get_asset_path("calibrationCrossHair.png")
+        
+        if os.path.exists(crosshair_path):
             # Load with Alpha Channel (IMREAD_UNCHANGED)
-            self.crosshair_img_cv = cv2.imread(hardcoded_path, cv2.IMREAD_UNCHANGED)
+            self.crosshair_img_cv = cv2.imread(crosshair_path, cv2.IMREAD_UNCHANGED)
             if self.crosshair_img_cv is None:
-                print(f"Error: Failed to load crosshair CV2 from {hardcoded_path}")
-            else:
-                pass # Loaded successfully
+                print(f"Error: Failed to load crosshair CV2 from {crosshair_path}")
         else:
-            print(f"Warning: Crosshair image not found at {hardcoded_path}")
+            print(f"Warning: Crosshair image not found at {crosshair_path}")
             
         # Load Eye-Logo (Placeholder)
-        logo_path = r"C:\Users\xdlye\Desktop\WIP\Ai Progs\EyeTrackingFrame\assets\interface_elements\Eye-logo.png"
+        logo_path = get_asset_path("Eye-logo.png")
         self.logo_pixmap = None
         if os.path.exists(logo_path):
             self.logo_pixmap = QPixmap(logo_path)
@@ -464,12 +507,7 @@ class MainWindow(QMainWindow):
         self.logo_label_left = QLabel()
         self.logo_label_left.setAlignment(Qt.AlignCenter)
         try:
-            if getattr(sys, 'frozen', False):
-                base_app_path = os.path.dirname(sys.executable)
-            else:
-                base_app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                
-            round_logo_path = os.path.join(base_app_path, "assets", "interface_elements", "Eye-fb-round.png")
+            round_logo_path = get_asset_path("Eye-fb-round.png")
             if os.path.exists(round_logo_path):
                 pix_round = QPixmap(round_logo_path)
                 self.logo_label_left.setPixmap(pix_round.scaledToHeight(50, Qt.SmoothTransformation))
@@ -1072,10 +1110,16 @@ class MainWindow(QMainWindow):
         self.exp_obj_btn.clicked.connect(self.export_obj)
         self.exp_obj_btn.setToolTip("Exports the current heatmap as a 3D Mesh (OBJ file).")
         
+        # Auto-Save Checkbox (User Request)
+        self.auto_save_check = QCheckBox("Auto-Save Sessions")
+        self.auto_save_check.setChecked(False)
+        self.auto_save_check.setToolTip("Automatically save session JSON when recording stops.")
+        
         self.exp_heatmap_btn = QPushButton("Export Heatmap")
         self.exp_heatmap_btn.clicked.connect(self.export_heatmap_png)
         self.exp_heatmap_btn.setToolTip("Saves the current heatmap visualization as a PNG image.")
         # self.exp_heatmap_btn.setStyleSheet("background-color: #B71C1C; color: white;") # Removed
+        exp_layout.addWidget(self.auto_save_check)
         exp_layout.addWidget(self.exp_json_btn)
         exp_layout.addWidget(self.exp_obj_btn)
         exp_layout.addWidget(self.exp_heatmap_btn)
@@ -1199,11 +1243,10 @@ class MainWindow(QMainWindow):
         - Checkboxes: Standard setIcon (Icon Left, Text Left).
         - Buttons: Custom Background Image (Icon Fixed Left, Text Centered).
         """
-        base_app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        icon_path = os.path.join(base_app_path, "assets", "interface_elements", "SVG icons", icon_name)
+        icon_path = get_asset_path(icon_name, subfolder="SVG icons")
         
         if not os.path.exists(icon_path):
-            print(f"Warning: Icon not found: {icon_name}")
+            print(f"Warning: Icon not found: {icon_name} at {icon_path}")
             return
 
         # Checkbox: Standard Icon
@@ -1215,6 +1258,11 @@ class MainWindow(QMainWindow):
         # PushButton: Advanced Styling (Icon Left, Text Center)
         if isinstance(widget, QPushButton):
             # 1. Create Cache Dir
+            if getattr(sys, 'frozen', False):
+                base_app_path = os.path.dirname(sys.executable)
+            else:
+                base_app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                
             cache_dir = os.path.join(base_app_path, "temp_icons_cache")
             os.makedirs(cache_dir, exist_ok=True)
             
@@ -1858,14 +1906,9 @@ class MainWindow(QMainWindow):
     
     def _load_gaze_cursor_image(self):
         """Load custom gaze cursor images."""
-        import os
-        base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
         # Load Round (Camera/Scene Mode)
-        path_round = os.path.join(base_path, "assets", "interface_elements", "Eye-fb-round.png")
-        if not os.path.exists(path_round):
-            # Fallback for dev environment or flat structure
-            path_round = os.path.join(base_path, "interface elements", "Eye-fb-round.png")
+        path_round = get_asset_path("Eye-fb-round.png")
             
         if os.path.exists(path_round):
              self.gaze_cursor_round = cv2.imread(path_round, cv2.IMREAD_UNCHANGED)
@@ -1873,7 +1916,7 @@ class MainWindow(QMainWindow):
              self.gaze_cursor_round = None
 
         # Load Long (Media Mode)
-        path_long = os.path.join(base_path, "assets", "interface_elements", "Eye-fb-oval.png")
+        path_long = get_asset_path("Eye-fb-oval.png")
         if os.path.exists(path_long):
              self.gaze_cursor_long = cv2.imread(path_long, cv2.IMREAD_UNCHANGED)
         else:
@@ -3531,6 +3574,10 @@ class MainWindow(QMainWindow):
                 
             self.start_sess_btn.setText("▶ Start Recording Session")
             
+            # Auto-Save Logic
+            if self.auto_save_check.isChecked():
+                 self.export_json(auto=True)
+            
             # Handle Video Save As
             if saved_video_path and os.path.exists(saved_video_path):
                 import shutil
@@ -3611,20 +3658,32 @@ class MainWindow(QMainWindow):
         self.heatmap_overlay_cache = None
         print("Heatmap data cleared")
 
-    def export_json(self):
+    def export_json(self, auto=False):
         if not self.session.samples:
             print("No data to export")
             return
             
-        # Ask user where to save
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        default_name = f"drawing_session_{timestamp}.json"
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export nTopology JSON", default_name, 
-            "JSON Files (*.json)"
-        )
+        if auto:
+            # Auto-Save Logic
+            base_app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if getattr(sys, 'frozen', False):
+                base_app_path = os.path.dirname(sys.executable)
+            
+            sessions_dir = os.path.join(base_app_path, "sessions")
+            os.makedirs(sessions_dir, exist_ok=True)
+            
+            file_path = os.path.join(sessions_dir, f"session_{timestamp}.json")
+            print(f"Auto-Saving Session to: {file_path}")
+        else:
+            # Manual Save Logic
+            default_name = f"drawing_session_{timestamp}.json"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Export nTopology JSON", default_name, 
+                "JSON Files (*.json)"
+            )
         
         if not file_path:
             return
@@ -3632,6 +3691,8 @@ class MainWindow(QMainWindow):
         export_to_ntopology(self.session.samples, self.heatmap.get_normalized_grid(), 
                             self.heatmap.width_mm, self.heatmap.height_mm, file_path)
         print(f"JSON exported to {file_path}")
+        if auto:
+            self.sess_info_lbl.setText(f"Session Saved: {os.path.basename(file_path)}")
 
     def export_obj(self):
         if not self.session.samples:

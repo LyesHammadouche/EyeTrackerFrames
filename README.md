@@ -3,19 +3,18 @@ Version: 1.0.0
 Date: February 2026
 
 ## Overview
-This application is a specialized eye-tracking analysis tool designed for drawing sessions. It captures gaze data using dual USB cameras (Eye + Scene), maps the gaze to a calibrated drawing surface, and generates density heatmaps that can be exported as congruently smoothed 3D meshes or JSON data for nTopology.
+**EyeTrackingFrame** is a complete, open-source eye-tracking platform designed to be **affordable (<$50)**, **plug-and-play**, and **research-ready**. 
 
-## Features
-- **Dual Camera Tracking**: Simultaneous processing of Eye (IR) and Scene cameras.
-- **Orlosky Pupil Detection**: Robust pupil detection algorithm.
-- **9-Point Calibration**: Precise mapping from eye coordinates to drawing plane.
-- **Heatmap Visualization**: Live Gaussian-smoothed heatmap overlay.
-- **Congruent Smoothing**: "What You See Is What You Export" - mesh topology smoothness matches the visual blur slider exactly.
-- **Media Stimulus**: Load Images or Videos to capture gaze responses to digital content.
-- **Export Formats**:
-  - OBJ (3D Heightfield Mesh)
-  - JSON (nTopology Schema)
-  - MP4 (Video Recording)
+By combining 3D-printed frames with a robust Python application, this tool transforms standard USB webcams into a high-precision gaze analysis instrument. It is ideal for **interactive art installations**, **academic research**, and **UX testing**.
+
+## Key Capabilities
+- **Dual Stream Logic**: Synchronizes an **Eye Camera** (IR) with a **Scene Camera** (World View).
+- **Live Analysis**: Real-time **Heatmap Generation** and **Gaze Path** visualization.
+- **Data Export**:
+  - **3D Mesh (OBJ)**: Export heatmaps as congruently smoothed heightfields.
+  - **nTopology (JSON)**: Direct integration with engineering workflows.
+  - **Video (MP4)**: Record full sessions with overlaid gaze data.
+- **Hardware Agnostic**: Runs on standard PC hardware with Python.
 
 ## Installation & Setup
 1. **Hardware**:

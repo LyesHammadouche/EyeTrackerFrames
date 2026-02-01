@@ -47,4 +47,4 @@ By combining 3D-printed frames with a robust Python application, this tool trans
 
 ## License
 MIT License.
-Created by [User Name] & Google DeepMind (Antigravity Assistant).
+Created by Lyes Hammadouche & Google DeepMind (Antigravity Assistant).

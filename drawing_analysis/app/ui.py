@@ -746,6 +746,11 @@ class MainWindow(QMainWindow):
         self.head_mode_group.addButton(self.btn_head_only)
         self.head_mode_group.addButton(self.btn_hybrid)
         
+        # Connect mode changes to update HEAD calibration button state
+        self.btn_eye_only.clicked.connect(self.update_head_cal_button_state)
+        self.btn_head_only.clicked.connect(self.update_head_cal_button_state)
+        self.btn_hybrid.clicked.connect(self.update_head_cal_button_state)
+        
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(self.btn_eye_only)
         mode_layout.addWidget(self.btn_head_only)
@@ -756,11 +761,11 @@ class MainWindow(QMainWindow):
         self.cal_head_btn.setEnabled(False)
         self.cal_head_btn.setToolTip("Reset the head tracker center to your current head position.")
         
-        self.cal_head_9_btn = QPushButton("Calibrate Head (9 Pts)")
+        self.cal_head_9_btn = QPushButton("Calibrate Head (5 Pts)")
         self.cal_head_9_btn.clicked.connect(lambda: self.start_calibration_routine(mode="head"))
         self.cal_head_9_btn.setEnabled(False)
         self.cal_head_9_btn.setStyleSheet(self.cal_head_btn.styleSheet()) # Same style
-        self.cal_head_9_btn.setToolTip("Calibrate head tracking with a 9-point grid.")
+        self.cal_head_9_btn.setToolTip("Calibrate head tracking with a 5-point grid (4 corners + center).")
         
         self.head_status_lbl = QLabel("Head: Off")
 
@@ -778,24 +783,24 @@ class MainWindow(QMainWindow):
         
         self.globe_slider = QSlider(Qt.Horizontal)
         self.globe_slider.setRange(10, 400) # Limited to 400 (larger values = bad calibration)
-        self.globe_slider.setValue(40)
+        self.globe_slider.setValue(150)  # Start at 150px for better visibility
         self.globe_slider.valueChanged.connect(self.update_globe_radius)
         self.globe_slider.setToolTip("Radius of the virtual eye model in pixels.")
-        self.globe_lbl = QLabel("Radius: 40px")
+        self.globe_lbl = QLabel("Radius: 150px")
         
         self.globe_x_slider = QSlider(Qt.Horizontal)
         self.globe_x_slider.setRange(-500, 1000) # Increased range
-        self.globe_x_slider.setValue(160)
+        self.globe_x_slider.setValue(320)  # Centered horizontally (640/2)
         self.globe_x_slider.valueChanged.connect(self.update_globe_center)
         self.globe_x_slider.setToolTip("Horizontal (X) position of the eye model center.")
-        self.globe_x_lbl = QLabel("Center X: 160")
+        self.globe_x_lbl = QLabel("Center X: 320")
         
         self.globe_y_slider = QSlider(Qt.Horizontal)
         self.globe_y_slider.setRange(-500, 1000) # Increased range
-        self.globe_y_slider.setValue(120)
+        self.globe_y_slider.setValue(240)  # Centered vertically (480/2)
         self.globe_y_slider.valueChanged.connect(self.update_globe_center)
         self.globe_y_slider.setToolTip("Vertical (Y) position of the eye model center.")
-        self.globe_y_lbl = QLabel("Center Y: 120")
+        self.globe_y_lbl = QLabel("Center Y: 240")
         
         model_layout.addRow(self.globe_lbl, self.globe_slider)
         model_layout.addRow(self.globe_x_lbl, self.globe_x_slider)
@@ -1471,12 +1476,23 @@ class MainWindow(QMainWindow):
             self.head_enable_check.blockSignals(True)
             self.head_enable_check.setChecked(False)
             self.head_enable_check.blockSignals(False)
+    
+    def update_head_cal_button_state(self):
+        """Enable/disable HEAD calibration based on tracking mode."""
+        # HEAD calibration only makes sense in Head Only or Hybrid mode
+        is_head_mode = self.btn_head_only.isChecked() or self.btn_hybrid.isChecked()
+        head_is_active = self.head_active
+        
+        # Enable only if head tracking active AND in head/hybrid mode
+        should_enable = head_is_active and is_head_mode
+        self.cal_head_9_btn.setEnabled(should_enable)
+        self.cal_head_btn.setEnabled(should_enable)
 
-    def on_head_data(self, has_face, yaw, pitch, x, y, frame):
+    def on_head_data(self, has_face, yaw, pitch, distance, x, y, frame):
         self.head_active = has_face
         if has_face:
-            self.head_gaze_data = (yaw, pitch, x,y)
-            self.head_status_lbl.setText(f"Head: Active ({int(yaw)}, {int(pitch)})")
+            self.head_gaze_data = (yaw, pitch, distance, x, y)
+            self.head_status_lbl.setText(f"Head: Active ({int(yaw)}, {int(pitch)}, {distance:.2f})")
             self.head_status_lbl.setStyleSheet("color: #00e676; font-weight: bold;")
             
             # AUTO-SHOW: Display Head View when face is detected
@@ -1499,8 +1515,57 @@ class MainWindow(QMainWindow):
     
     def calibrate_head_center(self):
         if self.head_tracker and self.head_gaze_data:
-            yaw, pitch, _, _ = self.head_gaze_data
+            yaw, pitch, distance, _, _ = self.head_gaze_data
             self.head_tracker.set_calibration(yaw, pitch)
+    
+    def estimate_viewing_distance_from_head_calibration(self):
+        """
+        Calculate user viewing distance from HEAD calibration data.
+        Uses geometry: distance = (screen_displacement) / tan(angle_displacement)
+        """
+        import numpy as np
+        import math
+        
+        if len(self.head_cal_points) < 5:
+            return 600.0  # Default fallback (~60cm)
+        
+        screen_width_px = self.screen_width
+        screen_width_mm = self.gaze_mapper.geometric_calibration['screen_width_mm']
+        
+        distances = []
+        
+        # Compare pairs of calibration points to estimate distance
+        for i in range(len(self.head_cal_points)):
+            yaw_i, pitch_i, x_i, y_i = self.head_cal_points[i]
+            
+            for j in range(i+1, len(self.head_cal_points)):
+                yaw_j, pitch_j, x_j, y_j = self.head_cal_points[j]
+                
+                # Use horizontal displacement (more reliable than vertical)
+                delta_yaw = abs(yaw_j - yaw_i)
+                delta_x_px = abs(x_j - x_i)
+                
+                # Only use pairs with significant angle difference (> 5°)
+                if delta_yaw > 5.0 and delta_x_px > 50:
+                    # Convert pixel displacement to mm
+                    delta_x_mm = (delta_x_px / screen_width_px) * screen_width_mm
+                    
+                    # Geometric relationship: delta_x = D * tan(delta_yaw)
+                    # Therefore: D = delta_x / tan(delta_yaw)
+                    distance_mm = delta_x_mm / math.tan(math.radians(delta_yaw))
+                    
+                    # Sanity check (typical viewing distance: 40-100cm)
+                    if 300 < distance_mm < 1200:
+                        distances.append(distance_mm)
+        
+        if distances:
+            # Use median for robustness against outliers
+            estimated_distance = float(np.median(distances))
+            print(f"Estimated viewing distance: {estimated_distance:.0f}mm ({len(distances)} measurements)")
+            return estimated_distance
+        
+        print("Could not estimate distance, using default 600mm")
+        return 600.0
 
     def load_media_file(self):
         # Support multiple file selection for images
@@ -1881,7 +1946,6 @@ class MainWindow(QMainWindow):
         gy = self.globe_y_slider.value()
         self.globe_center = (gx, gy)
         self.globe_x_lbl.setText(f"Globe X: {gx}")
-        self.globe_y_lbl.setText(f"Globe Y: {gy}")
         self.globe_y_lbl.setText(f"Globe Y: {gy}")
 
     @Slot(object)
@@ -2275,7 +2339,7 @@ class MainWindow(QMainWindow):
                 if self.cal_mode == "head":
                     # Collect Head Data (Yaw, Pitch)
                     if self.head_active and self.head_gaze_data:
-                        # head_gaze_data is (yaw, pitch, x, y)
+                        # head_gaze_data is (yaw, pitch, distance, x, y)
                         # We want (yaw, pitch)
                         self.cal_buffer.append((self.head_gaze_data[0], self.head_gaze_data[1]))
                     else:
@@ -2369,15 +2433,21 @@ class MainWindow(QMainWindow):
                 final_gaze = None
                 
                 if mode == "Eye Only":
+                    # Apply head compensation if head tracking is active
+                    if self.head_active and self.head_gaze_data and self.gaze_mapper.head_compensation_enabled:
+                        yaw, pitch, distance, _, _ = self.head_gaze_data
+                        eye_gaze_x, eye_gaze_y = self.gaze_mapper.apply_head_compensation(
+                            eye_gaze_x, eye_gaze_y, yaw, pitch, distance
+                        )
                     final_gaze = (eye_gaze_x, eye_gaze_y)
                     
                 elif mode == "Head Only":
                     if self.head_active and self.head_gaze_data:
-                        _, _, hx_screen, hy_screen = self.head_gaze_data
+                        yaw, pitch, distance, hx_screen, hy_screen = self.head_gaze_data
                         
                         # Use Calibrated Model if available
                         if self.head_calibration.is_calibrated:
-                            res = self.head_calibration.map_point((self.head_gaze_data[0], self.head_gaze_data[1]))
+                            res = self.head_calibration.map_point((yaw, pitch))
                             if res:
                                 final_gaze = res
                         else:
@@ -2393,13 +2463,13 @@ class MainWindow(QMainWindow):
                     
                     head_pt = None
                     if self.head_active and self.head_gaze_data:
+                        yaw, pitch, distance, hx_s, hy_s = self.head_gaze_data
                         # Use Calibrated Model if available
                         if self.head_calibration.is_calibrated:
-                            res = self.head_calibration.map_point((self.head_gaze_data[0], self.head_gaze_data[1]))
+                            res = self.head_calibration.map_point((yaw, pitch))
                             if res:
                                 head_pt = res
                         else:
-                            _, _, hx_s, hy_s = self.head_gaze_data
                             scale_x = base_w / getattr(self, 'screen_width', 1920)
                             scale_y = base_h / getattr(self, 'screen_height', 1080)
                             head_pt = (hx_s * scale_x, hy_s * scale_y)
@@ -2461,8 +2531,8 @@ class MainWindow(QMainWindow):
                     # Head Tracker detects Right turn. Adding Right Turn to Left Pupil cancels out drift.)
                     if self.btn_hybrid.isChecked() and self.head_tracker and self.head_gaze_data:
                         try:
-                            # head_gaze_data is (yaw, pitch, sx, sy)
-                            _, _, h_sx, h_sy = self.head_gaze_data
+                            # head_gaze_data is (yaw, pitch, distance, sx, sy)
+                            _, _, _, h_sx, h_sy = self.head_gaze_data
                             
                             scr_w = getattr(self, 'screen_width', 1920)
                             scr_h = getattr(self, 'screen_height', 1080)
@@ -2591,23 +2661,18 @@ class MainWindow(QMainWindow):
             gap = 10
             len_ = 35
             # Left
-            cv2.line(frame, (cx - len_, cy), (cx - gap, cy), (0, 255, 0), 2)
+            cv2.line(frame, (cx - len_, cy), (cx - gap, cy), (255, 255, 255), 2)
             # Right
-            cv2.line(frame, (cx + gap, cy), (cx + len_, cy), (0, 255, 0), 2)
+            cv2.line(frame, (cx + gap, cy), (cx + len_, cy), (255, 255, 255), 2)
             # Top
-            cv2.line(frame, (cx, cy - len_), (cx, cy - gap), (0, 255, 0), 2)
+            cv2.line(frame, (cx, cy - len_), (cx, cy - gap), (255, 255, 255), 2)
             # Bottom
-            cv2.line(frame, (cx, cy + gap), (cx, cy + len_), (0, 255, 0), 2)
+            cv2.line(frame, (cx, cy + gap), (cx, cy + len_), (255, 255, 255), 2)
             
             # Outer circle
-            cv2.circle(frame, (cx, cy), 18, (0, 255, 0), 1)
+            cv2.circle(frame, (cx, cy), 18, (255, 255, 255), 1)
             
-            # Instruction Text for alignment
-            # Split into two lines for clarity
-            cv2.putText(frame, "1. Overlay Crosshair on Target", (cx - 130, cy + 60), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(frame, "2. LOOK AT VIDEO FEEDBACK TARGET", (cx - 150, cy + 90), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            # Instructions handled by Qt Overlay (not OpenCV text)
 
         # === HEATMAP OVERLAY ===
         # Blend heatmap visualization onto the scene frame if enabled
@@ -2671,12 +2736,14 @@ class MainWindow(QMainWindow):
                     dot_r = int(5 * scale)
                     line_len = int(20 * scale)
                     thickness = max(2, int(2 * scale))
-                    
-                    # Text handled in Qt Overlay
-                    cv2.circle(frame, (px, py), circle_r, (0, 0, 255), thickness)
-                    cv2.circle(frame, (px, py), dot_r, (0, 255, 0), -1)
-                    cv2.line(frame, (px-line_len, py), (px+line_len, py), (0, 0, 255), thickness)
-                    cv2.line(frame, (px, py-len_len), (px, py+len_len), (0, 0, 255), thickness)
+                      
+                    # HEAD CALIBRATION: Use same display system as Eye calibration
+                    # Text is handled by Qt Overlay (update_overlay_target), not OpenCV!
+                    # Just draw the crosshair visual
+                    cv2.circle(frame, (px, py), circle_r, (255, 255, 255), thickness)
+                    cv2.circle(frame, (px, py), dot_r, (255, 255, 255), -1)
+                    cv2.line(frame, (px-line_len, py), (px+line_len, py), (255, 255, 255), thickness)
+                    cv2.line(frame, (px, py-line_len), (px, py+line_len), (255, 255, 255), thickness)
             else:
                 if self.calibration_step < len(self.calibration_targets):
                     nx, ny = self.calibration_targets[self.calibration_step]
@@ -2727,11 +2794,11 @@ class MainWindow(QMainWindow):
                              
                              frame[y1:y2, x1:x2] = roi.astype(np.uint8)
                     else:
-                        # Fallback drawing
-                        cv2.circle(frame, (px, py), circle_r, (0, 0, 255), thickness)
-                        cv2.circle(frame, (px, py), dot_r, (0, 255, 0), -1)
-                        cv2.line(frame, (px-line_len, py), (px+line_len, py), (0, 0, 255), thickness)
-                        cv2.line(frame, (px, py-len_len), (px, py+len_len), (0, 0, 255), thickness)
+                        # Fallback: Simple white crosshair (same for both HEAD and Eye)
+                        cv2.circle(frame, (px, py), circle_r, (255, 255, 255), thickness)
+                        cv2.circle(frame, (px, py), dot_r, (255, 255, 255), -1)
+                        cv2.line(frame, (px-line_len, py), (px+line_len, py), (255, 255, 255), thickness)
+                        cv2.line(frame, (px, py-line_len), (px, py+line_len), (255, 255, 255), thickness)
 
         # Draw Gaze Path
         if self.show_gaze_path and len(self.gaze_path) > 1:
@@ -2823,7 +2890,7 @@ class MainWindow(QMainWindow):
             
             if mode != "Eye Only":
                 if self.head_active and self.head_gaze_data:
-                    _, _, hx_screen, hy_screen = self.head_gaze_data
+                    yaw, pitch, distance, hx_screen, hy_screen = self.head_gaze_data
                     
                     # SYSTEMIC VISUALIZATION (Orlosky Style)
                     # 1. Map Head Screen Coords back to Scene Frame (640x480)
@@ -2964,7 +3031,14 @@ class MainWindow(QMainWindow):
             if not self.head_active:
                 QMessageBox.warning(self, "Head Tracker", "Head Tracker is not active. Please enable it first.")
         
-        self.cal_status_lbl.setText("Look at Target 1/9 -> Press 'C'")
+        # Set status label based on mode
+        if mode == "head":
+            # HEAD calibration: 5 points with specific instructions
+            self.cal_status_lbl.setText("Align white screen crosshair with video feedback cursor -> Press 'C'")
+        else:
+            # Eye calibration: 9 points
+            total_points = 9
+            self.cal_status_lbl.setText(f"Look at Target 1/{total_points} -> Press 'C'")
         self.setFocus() # Force focus so key presses work
         
         if mode == "quick_drift":
@@ -3010,34 +3084,68 @@ class MainWindow(QMainWindow):
                  mid_x = (min_x + max_x) / 2
                  mid_y = (min_y + max_y) / 2
                  
-                 xs = [min_x, mid_x, max_x]
-                 ys = [min_y, mid_y, max_y]
-                 
-                 self.calibration_targets = []
-                 for y in ys:
-                     for x in xs:
-                         self.calibration_targets.append((x, y))
+                 # Use 5 points for HEAD mode (4 corners + center), 9 for eye calibration
+                 if mode == "head":
+                     # 5-point pattern: corners + center
+                     self.calibration_targets = [
+                         (min_x, min_y),  # Top-left
+                         (max_x, min_y),  # Top-right
+                         (mid_x, mid_y),  # Center
+                         (min_x, max_y),  # Bottom-left
+                         (max_x, max_y)   # Bottom-right
+                     ]
+                 else:
+                     # 9-point grid for eye calibration
+                     xs = [min_x, mid_x, max_x]
+                     ys = [min_y, mid_y, max_y]
+                     
+                     self.calibration_targets = []
+                     for y in ys:
+                         for x in xs:
+                             self.calibration_targets.append((x, y))
             else:
                 # STANDARD SCREEN CALIBRATION
-                # For screen, we also use normalized, but we might want margins.
-                # Let's map margins to normalized coords approx 0.05 to 0.95
+                # Use 5 points for HEAD mode (4 corners + center), 9 for eye calibration
+                if mode == "head":
+                    # 5-point pattern
+                    self.calibration_targets = [
+                        (0.1, 0.1),  # Top-left
+                        (0.9, 0.1),  # Top-right
+                        (0.5, 0.5),  # Center
+                        (0.1, 0.9),  # Bottom-left
+                        (0.9, 0.9)   # Bottom-right
+                    ]
+                else:
+                    # 9-point grid for eye calibration
+                    ys = [0.1, 0.5, 0.9]
+                    xs = [0.1, 0.5, 0.9]
+                    self.calibration_targets = []
+                    for y in ys:
+                        for x in xs:
+                            self.calibration_targets.append((x, y))
+            
+            self.calibration_overlay.show()
+            self.update_overlay_target()
+        else:
+            # Normalized Scene Coords (roughly 0.1 to 0.9 to avoid edge clipping)
+            # Use 5 points for HEAD mode, 9 for eye calibration
+            if mode == "head":
+                # 5-point pattern
+                self.calibration_targets = [
+                    (0.1, 0.1),  # Top-left
+                    (0.9, 0.1),  # Top-right
+                    (0.5, 0.5),  # Center
+                    (0.1, 0.9),  # Bottom-left
+                    (0.9, 0.9)   # Bottom-right
+                ]
+            else:
+                # 9-point grid
                 self.calibration_targets = []
                 ys = [0.1, 0.5, 0.9]
                 xs = [0.1, 0.5, 0.9]
                 for y in ys:
                     for x in xs:
                         self.calibration_targets.append((x, y))
-            
-            self.calibration_overlay.show()
-            self.update_overlay_target()
-        else:
-            # Normalized Scene Coords (roughly 0.1 to 0.9 to avoid edge clipping)
-            self.calibration_targets = []
-            ys = [0.1, 0.5, 0.9]
-            xs = [0.1, 0.5, 0.9]
-            for y in ys:
-                for x in xs:
-                    self.calibration_targets.append((x, y))
             
             self.calibration_overlay.hide() # Why hide? Because we draw on scene image directly if not overlay?
             # Wait, if not screen mode, we draw on the OpenCV frame using draw_scene_overlay.
@@ -3130,7 +3238,7 @@ class MainWindow(QMainWindow):
                          if curr_gaze:
                              # Add Head Comp if Hybrid
                              if not self.btn_eye_only.isChecked() and self.head_gaze_data:
-                                 _, _, h_sx, h_sy = self.head_gaze_data
+                                 _, _, _, h_sx, h_sy = self.head_gaze_data
                                  scr_w = getattr(self, 'screen_width', 1920)
                                  scr_h = getattr(self, 'screen_height', 1080)
                                  h_dx = h_sx - (scr_w / 2)
@@ -3162,7 +3270,7 @@ class MainWindow(QMainWindow):
                      # If we are calibrating Eye (Grid) but in Hybrid Mode, we need to Zero the head at Center.
                      if not self.btn_eye_only.isChecked():
                          if self.head_tracker and self.head_gaze_data:
-                             h_yaw, h_pitch, _, _ = self.head_gaze_data
+                             h_yaw, h_pitch, h_distance, _, _ = self.head_gaze_data
                              
                              # Buffer for Auto-Tune ONLY if Grid Setup (not quick drift)
                              if self.cal_mode == "grid":
@@ -3184,7 +3292,14 @@ class MainWindow(QMainWindow):
                 # Done
                 if self.cal_mode == "head":
                     self.head_calibration.compute_model()
-                    self.cal_status_lbl.setText(f"Head Calibration Complete. RMSE: {self.head_calibration.rmse:.2f}px")
+                    
+                    # === EMPIRICAL COMPENSATION ===
+                    if len(self.head_cal_points) >= 3:
+                        success = self.gaze_mapper.train_head_compensation_model(self.head_cal_points)
+                        status = "Model trained!" if success else "Need ≥3 points"
+                        self.cal_status_lbl.setText(f"HEAD Complete. {status} RMSE: {self.head_calibration.rmse:.2f}px")
+                    else:
+                        self.cal_status_lbl.setText(f"HEAD Complete. RMSE: {self.head_calibration.rmse:.2f}px")
                 else:
                     self.calibration.compute_model()
                     
@@ -3203,6 +3318,9 @@ class MainWindow(QMainWindow):
                     self.toggle_gaze_cursor_option()
                 
                 if self.current_map_mode.startswith("screen"):
+                   # Clear all visual cues from overlay
+                   self.calibration_overlay.set_message("")
+                   self.calibration_overlay.set_target(None, None)
                    self.calibration_overlay.hide()
     
     def update_overlay_target(self):
@@ -3219,6 +3337,12 @@ class MainWindow(QMainWindow):
              self.calibration_overlay.set_target(tx, ty)
              if self.cal_mode == "quick_drift":
                   self.calibration_overlay.set_message("Quick Center: Align Head & Eye -> Press 'C'")
+             elif self.cal_mode == "head":
+                  # HEAD calibration: More explicit instructions
+                  total = len(self.calibration_targets)
+                  self.calibration_overlay.set_message(
+                      f"Target {self.calibration_step+1}/{total}: Align screen cursor with video feedback cursor -> Press 'C'"
+                  )
              else:
                   self.calibration_overlay.set_message(f"Look at Target {self.calibration_step+1}/{len(self.calibration_targets)} -> Press 'C'")
 
@@ -3890,7 +4014,13 @@ class MainWindow(QMainWindow):
                 else:
                     msg = "Step 2: Align scene center to screen center -> Press 'C'"
             else:
-                msg = f"Look at Target {self.calibration_step + 1} / 9"
+                # Dynamic calibration message based on mode
+                if self.cal_mode == "head":
+                    total_points = len(self.calibration_targets) if self.calibration_targets else 5
+                    msg = f"Target {self.calibration_step + 1}/{total_points}: Align screen crosshair with video feedback"
+                else:
+                    total_points = len(self.calibration_targets) if self.calibration_targets else 9
+                    msg = f"Look at Target {self.calibration_step + 1}/{total_points}"
             
             # Use a modern "Tag" style background
             fm = painter.fontMetrics()

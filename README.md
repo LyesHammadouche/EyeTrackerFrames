@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/banner.png" alt="EyeTrackerFrames — Art meets eye tracking" width="100%">
-</p>
-
 <h1 align="center">EyeTrackerFrames</h1>
 
 <p align="center">
